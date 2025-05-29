@@ -1,0 +1,88 @@
+services:
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: redpanda
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+      - "9644:9644"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    command:
+      - redpanda
+      - start
+      - --node-id
+      - "0"
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:29092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:29092
+    healthcheck:
+      test: [ "CMD", "rpk", "cluster", "info" ]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  topic_init:
+      image: docker.redpanda.com/redpandadata/redpanda:latest
+      container_name: topic_init
+      depends_on:
+        redpanda:
+          condition: service_healthy
+      command:
+        - topic
+        - create
+        - frames
+        - --partitions=1
+        - --brokers=redpanda:29092
+
+  topic_cleanup:
+      image: docker.redpanda.com/redpandadata/redpanda:latest
+      container_name: topic_cleanup
+      depends_on:
+        redpanda:
+          condition: service_healthy
+      command:
+        - topic
+        - delete
+        - browser-history
+        - --brokers=redpanda:29092
+      profiles: [ "manual" ]
+
+  data_generator:
+    build:
+      context: ./microservices/data_generator
+      dockerfile: Dockerfile
+    container_name: data_generator
+    volumes:
+      - ./data/history.json:/app/history.json:ro
+    environment:
+      KAFKA_BROKERS: "redpanda:29092"
+      KAFKA_TOPIC: "browser-history"
+      JSON_PATH: "/app/history.json"
+    ports:
+        - "5000:5000"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      topic_init:
+        condition: service_completed_successfully
+
+  stats_generator:
+      build:
+        context: ./microservices/stats_generator
+        dockerfile: Dockerfile
+      container_name: stats_generator
+      environment:
+        KAFKA_BROKERS: "redpanda:29092"
+        TOPIC: "browser-history"
+        GROUP_ID: "history-stats"
+      depends_on:
+        redpanda:
+          condition: service_healthy
+        topic_init:
+          condition: service_completed_successfully
+
+volumes:
+  redpanda_data:
